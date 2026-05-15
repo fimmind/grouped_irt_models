@@ -1,3 +1,6 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Local raw datasets
+data/raw/duolingo_hlr/
