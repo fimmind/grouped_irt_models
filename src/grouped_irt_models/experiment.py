@@ -39,13 +39,19 @@ class ModelSpec:
     tau_theta: float
     tau_delta: float
     gate_c: float
+<<<<<<< HEAD
     known_loss_weight: float
     unknown_loss_weight: float
+=======
+    fit_strategy: str
+    threshold_strategy: str
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
 
 
 @dataclass(frozen=True)
 class DifficultyOnlySpec:
     name: str
+    threshold_strategy: str
 
 
 @dataclass(frozen=True)
@@ -64,10 +70,14 @@ class Metrics:
     brier: float
     auc: float
     accuracy: float
+<<<<<<< HEAD
     known_recall: float
     unknown_recall: float
     balanced_accuracy: float
     unknown_priority_balanced_accuracy: float
+=======
+    balanced_accuracy: float
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
     calibration_error: float
     vocabulary_mae: float
 
@@ -309,8 +319,12 @@ def fit_grouped_map(
     tau_theta: float,
     tau_delta: float,
     gate_c: float,
+<<<<<<< HEAD
     known_loss_weight: float,
     unknown_loss_weight: float,
+=======
+    fit_strategy: str,
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
 ) -> FitResult:
     theta_start = fit_rasch_theta(y, b, tau_theta, known_loss_weight, unknown_loss_weight)
     gate = rational_gate(int(y.shape[0]), gate_c)
@@ -321,14 +335,38 @@ def fit_grouped_map(
     initial = np.zeros(group_count + 1, dtype=np.float64)
     initial[0] = theta_start
 
+<<<<<<< HEAD
     def objective_gradient(params: FloatArray) -> FloatArray:
+=======
+    if fit_strategy == "standard":
+        sample_weights = np.ones_like(y)
+    elif fit_strategy == "class_weighted":
+        positive_rate = float(np.clip(np.mean(y), 0.05, 0.95))
+        weight_positive = 0.5 / positive_rate
+        weight_negative = 0.5 / (1.0 - positive_rate)
+        sample_weights = y * weight_positive + (1.0 - y) * weight_negative
+    else:
+        raise ValueError(f"Unknown fit_strategy: {fit_strategy}")
+
+    def objective(params: FloatArray) -> tuple[float, FloatArray]:
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
         theta = float(params[0])
         delta = params[1:]
         residual = q_matrix @ delta
         logits = theta - b + gate * residual
+<<<<<<< HEAD
         probabilities = safe_expit(logits)
         errors = unknown_loss_weight * (1.0 - y) * probabilities
         errors -= known_loss_weight * y * (1.0 - probabilities)
+=======
+        probabilities = expit(logits)
+        nll = np.sum(
+            sample_weights * (y * np.logaddexp(0.0, -logits) + (1.0 - y) * np.logaddexp(0.0, logits))
+        )
+        penalty = theta * theta / (2.0 * tau_theta * tau_theta)
+        penalty += float(np.dot(delta, delta)) / (2.0 * tau_delta * tau_delta)
+        errors = sample_weights * (probabilities - y)
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
         gradient = np.empty_like(params)
         gradient[0] = np.sum(errors) + theta / (tau_theta * tau_theta)
         gradient[1:] = gate * (q_matrix.T @ errors) + delta / (tau_delta * tau_delta)
@@ -403,6 +441,35 @@ def build_residual_clusters(
     return soft_cluster_membership(normalized_profiles, group_count, seed, 8.0)
 
 
+def build_response_clusters(known: BoolArray, group_count: int, seed: int) -> FloatArray:
+    word_profiles = known.astype(np.float64).T
+    profile_means = np.mean(word_profiles, axis=1, keepdims=True)
+    centered_profiles = word_profiles - profile_means
+    profile_norms = np.linalg.norm(centered_profiles, axis=1)
+    profile_norms[profile_norms == 0.0] = 1.0
+    normalized_profiles = centered_profiles / profile_norms[:, np.newaxis]
+    return soft_cluster_membership(normalized_profiles, group_count, seed, 6.0)
+
+
+def build_residual_sign_clusters(
+    known: BoolArray,
+    difficulties: FloatArray,
+    group_count: int,
+    tau_theta: float,
+    seed: int,
+) -> FloatArray:
+    theta = fit_full_rasch_thetas(known, difficulties, tau_theta)
+    logits = theta[:, np.newaxis] - difficulties[np.newaxis, :]
+    residuals = known.astype(np.float64) - expit(logits)
+    signs = np.where(residuals >= 0.0, 1.0, -1.0).T
+    profile_means = np.mean(signs, axis=1, keepdims=True)
+    centered_profiles = signs - profile_means
+    profile_norms = np.linalg.norm(centered_profiles, axis=1)
+    profile_norms[profile_norms == 0.0] = 1.0
+    normalized_profiles = centered_profiles / profile_norms[:, np.newaxis]
+    return soft_cluster_membership(normalized_profiles, group_count, seed, 6.0)
+
+
 def binary_column(values: Iterable[bool]) -> FloatArray:
     return np.array([1.0 if value else 0.0 for value in values], dtype=np.float64)
 
@@ -468,6 +535,75 @@ def combine_group_matrices(matrices: list[FloatArray]) -> FloatArray:
     return combined / row_sums[:, np.newaxis]
 
 
+def build_difficulty_bin_matrix(difficulties: FloatArray, bin_count: int) -> FloatArray:
+    quantiles = np.quantile(difficulties, np.linspace(0.0, 1.0, bin_count + 1))
+    columns: list[FloatArray] = []
+    for index in range(bin_count):
+        lower = quantiles[index]
+        upper = quantiles[index + 1]
+        if index == bin_count - 1:
+            mask = (difficulties >= lower) & (difficulties <= upper)
+        else:
+            mask = (difficulties >= lower) & (difficulties < upper)
+        columns.append(mask.astype(np.float64))
+    matrix = np.column_stack(columns).astype(np.float64)
+    row_sums = np.sum(matrix, axis=1)
+    row_sums[row_sums == 0.0] = 1.0
+    return matrix / row_sums[:, np.newaxis]
+
+
+def build_interaction_groups(base_groups: FloatArray, bin_groups: FloatArray) -> FloatArray:
+    columns: list[FloatArray] = []
+    for bin_index in range(bin_groups.shape[1]):
+        bin_values = bin_groups[:, bin_index][:, np.newaxis]
+        columns.append(base_groups * bin_values)
+    interaction = np.column_stack(columns).astype(np.float64)
+    row_sums = np.sum(interaction, axis=1)
+    row_sums[row_sums == 0.0] = 1.0
+    return interaction / row_sums[:, np.newaxis]
+
+
+def balanced_accuracy_from_predictions(y_true: FloatArray, predicted_positive: BoolArray) -> float:
+    actual_positive = y_true >= 0.5
+    actual_negative = ~actual_positive
+    if int(np.sum(actual_positive)) == 0 or int(np.sum(actual_negative)) == 0:
+        return float("nan")
+    true_positive_rate = float(np.mean(predicted_positive[actual_positive]))
+    true_negative_rate = float(np.mean(~predicted_positive[actual_negative]))
+    return 0.5 * (true_positive_rate + true_negative_rate)
+
+
+def select_threshold(
+    observed_y: FloatArray,
+    observed_probabilities: FloatArray,
+    threshold_strategy: str,
+) -> float:
+    if threshold_strategy == "fixed_0.50":
+        return 0.50
+    if threshold_strategy == "observed_rate":
+        return float(np.clip(np.mean(observed_y), 0.10, 0.90))
+    if threshold_strategy in {"observed_ba_opt", "observed_ba_opt_shrunk"}:
+        threshold_candidates = np.linspace(0.10, 0.90, 161)
+        scores: list[tuple[float, float]] = []
+        for threshold in threshold_candidates:
+            predicted = observed_probabilities >= threshold
+            score = balanced_accuracy_from_predictions(observed_y, predicted)
+            if math.isnan(score):
+                continue
+            scores.append((score, float(threshold)))
+        if not scores:
+            return 0.50
+        best_score = max(score for score, _ in scores)
+        best_thresholds = [threshold for score, threshold in scores if abs(score - best_score) <= 1e-12]
+        optimal_threshold = min(best_thresholds, key=lambda value: abs(value - 0.50))
+        if threshold_strategy == "observed_ba_opt":
+            return float(optimal_threshold)
+        answer_count = int(observed_y.shape[0])
+        shrink_gate = float(answer_count / (answer_count + 30))
+        return float(0.50 + shrink_gate * (optimal_threshold - 0.50))
+    raise ValueError(f"Unknown threshold_strategy: {threshold_strategy}")
+
+
 def calibration_error(y_true: FloatArray, y_prob: FloatArray, bin_count: int) -> float:
     bins = np.linspace(0.0, 1.0, bin_count + 1)
     total = float(y_true.shape[0])
@@ -489,11 +625,16 @@ def calibration_error(y_true: FloatArray, y_prob: FloatArray, bin_count: int) ->
 
 
 def evaluate_predictions(
+<<<<<<< HEAD
     y_true: FloatArray,
     y_prob: FloatArray,
     known_balanced_recall_weight: float,
     unknown_balanced_recall_weight: float,
 ) -> tuple[float, float, float, float, float, float, float, float, float, float]:
+=======
+    y_true: FloatArray, y_prob: FloatArray, threshold: float
+) -> tuple[float, float, float, float, float, float, float]:
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
     epsilon = 1e-9
     clipped = np.clip(y_prob, epsilon, 1.0 - epsilon)
     log_loss = -float(np.mean(y_true * np.log(clipped) + (1.0 - y_true) * np.log(1.0 - clipped)))
@@ -512,6 +653,7 @@ def evaluate_predictions(
         balanced_accuracy = float("nan")
         unknown_priority_balanced_accuracy = float("nan")
     else:
+<<<<<<< HEAD
         balanced_accuracy = 0.5 * (known_recall + unknown_recall)
         weight_sum = known_balanced_recall_weight + unknown_balanced_recall_weight
         unknown_priority_balanced_accuracy = (
@@ -556,6 +698,16 @@ def binary_auc_score(y_true: FloatArray, y_prob: FloatArray) -> float:
     positive_rank_sum = float(np.sum(ranks[sorted_labels]))
     auc = (positive_rank_sum - (positive_count * (positive_count + 1) / 2.0)) / (positive_count * negative_count)
     return float(auc)
+=======
+        auc = float("nan")
+    predicted_positive = y_prob >= threshold
+    actual_positive = y_true >= 0.5
+    accuracy = float(np.mean(predicted_positive == actual_positive))
+    balanced_accuracy = balanced_accuracy_from_predictions(y_true, predicted_positive)
+    ece = calibration_error(y_true, y_prob, 10)
+    vocabulary_mae = abs(float(np.sum(y_prob)) - float(np.sum(y_true)))
+    return log_loss, brier, auc, accuracy, balanced_accuracy, ece, vocabulary_mae
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
 
 
 def evaluate_model(
@@ -586,15 +738,22 @@ def evaluate_model(
                     spec.tau_theta,
                     spec.tau_delta,
                     spec.gate_c,
+<<<<<<< HEAD
                     spec.known_loss_weight,
                     spec.unknown_loss_weight,
+=======
+                    spec.fit_strategy,
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                 )
+                observed_probabilities = predict_probability(fit, observed_b, observed_q)
+                threshold = select_threshold(observed_y, observed_probabilities, spec.threshold_strategy)
                 hidden_probabilities = predict_probability(
                     fit,
                     dataset.difficulties[hidden_indices],
                     spec.group_matrix[hidden_indices],
                 )
                 hidden_y = dataset.known[user_index, hidden_indices].astype(np.float64)
+<<<<<<< HEAD
                 (
                     log_loss,
                     brier,
@@ -611,6 +770,12 @@ def evaluate_model(
                     hidden_probabilities,
                     KNOWN_BALANCED_RECALL_WEIGHT,
                     UNKNOWN_BALANCED_RECALL_WEIGHT,
+=======
+                log_loss, brier, auc, accuracy, balanced_accuracy, ece, vocabulary_mae = evaluate_predictions(
+                    hidden_y,
+                    hidden_probabilities,
+                    threshold,
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                 )
                 metrics.append(
                     Metrics(
@@ -621,10 +786,14 @@ def evaluate_model(
                         brier=brier,
                         auc=auc,
                         accuracy=accuracy,
+<<<<<<< HEAD
                         known_recall=known_recall,
                         unknown_recall=unknown_recall,
                         balanced_accuracy=balanced_accuracy,
                         unknown_priority_balanced_accuracy=unknown_priority_balanced_accuracy,
+=======
+                        balanced_accuracy=balanced_accuracy,
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                         calibration_error=ece,
                         vocabulary_mae=vocabulary_mae,
                     )
@@ -650,9 +819,14 @@ def evaluate_difficulty_only_model(
         for repeat in range(repeats):
             for user_index in range(len(dataset.user_ids)):
                 permutation = rng.permutation(word_count)
+                observed_indices = permutation[:q]
                 hidden_indices = permutation[q:]
+                observed_probabilities = base_probabilities[observed_indices]
+                observed_y = dataset.known[user_index, observed_indices].astype(np.float64)
+                threshold = select_threshold(observed_y, observed_probabilities, spec.threshold_strategy)
                 hidden_probabilities = base_probabilities[hidden_indices]
                 hidden_y = dataset.known[user_index, hidden_indices].astype(np.float64)
+<<<<<<< HEAD
                 (
                     log_loss,
                     brier,
@@ -669,6 +843,12 @@ def evaluate_difficulty_only_model(
                     hidden_probabilities,
                     KNOWN_BALANCED_RECALL_WEIGHT,
                     UNKNOWN_BALANCED_RECALL_WEIGHT,
+=======
+                log_loss, brier, auc, accuracy, balanced_accuracy, ece, vocabulary_mae = evaluate_predictions(
+                    hidden_y,
+                    hidden_probabilities,
+                    threshold,
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                 )
                 metrics.append(
                     Metrics(
@@ -679,10 +859,14 @@ def evaluate_difficulty_only_model(
                         brier=brier,
                         auc=auc,
                         accuracy=accuracy,
+<<<<<<< HEAD
                         known_recall=known_recall,
                         unknown_recall=unknown_recall,
                         balanced_accuracy=balanced_accuracy,
                         unknown_priority_balanced_accuracy=unknown_priority_balanced_accuracy,
+=======
+                        balanced_accuracy=balanced_accuracy,
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                         calibration_error=ece,
                         vocabulary_mae=vocabulary_mae,
                     )
@@ -697,6 +881,7 @@ def aggregate_metrics(metrics: list[Metrics]) -> pd.DataFrame:
         brier=("brier", "mean"),
         auc=("auc", "mean"),
         accuracy=("accuracy", "mean"),
+<<<<<<< HEAD
         known_recall=("known_recall", "mean"),
         unknown_recall=("unknown_recall", "mean"),
         balanced_accuracy=("balanced_accuracy", "mean"),
@@ -708,6 +893,15 @@ def aggregate_metrics(metrics: list[Metrics]) -> pd.DataFrame:
         ["q", "unknown_priority_balanced_accuracy", "balanced_accuracy", "log_loss"],
         ascending=[True, False, False, True],
     ).reset_index(drop=True)
+=======
+        balanced_accuracy=("balanced_accuracy", "mean"),
+        calibration_error=("calibration_error", "mean"),
+        vocabulary_mae=("vocabulary_mae", "mean"),
+    )
+    return grouped.sort_values(["q", "balanced_accuracy", "log_loss"], ascending=[True, False, True]).reset_index(
+        drop=True
+    )
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
 
 
 def format_float(value: float, precision: int) -> str:
@@ -739,10 +933,16 @@ def write_summary(
     q_values: list[int],
     repeats: int,
 ) -> None:
+<<<<<<< HEAD
     best_by_q = aggregate.sort_values(
         ["q", "unknown_priority_balanced_accuracy", "balanced_accuracy", "log_loss"],
         ascending=[True, False, False, True],
     ).groupby("q", as_index=False).first()
+=======
+    best_by_q = aggregate.sort_values(["q", "balanced_accuracy", "log_loss"], ascending=[True, False, True]).groupby(
+        "q", as_index=False
+    ).first()
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
     baseline_rows = [
         {
             "model": spec.name,
@@ -750,8 +950,13 @@ def write_summary(
             "tau_theta": "n/a",
             "tau_delta": "n/a",
             "gate_c": "n/a",
+<<<<<<< HEAD
             "known_loss_weight": "n/a",
             "unknown_loss_weight": "n/a",
+=======
+            "fit_strategy": "none",
+            "threshold_strategy": spec.threshold_strategy,
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
         }
         for spec in baseline_specs
     ]
@@ -762,8 +967,13 @@ def write_summary(
             "tau_theta": spec.tau_theta,
             "tau_delta": spec.tau_delta,
             "gate_c": spec.gate_c,
+<<<<<<< HEAD
             "known_loss_weight": spec.known_loss_weight,
             "unknown_loss_weight": spec.unknown_loss_weight,
+=======
+            "fit_strategy": spec.fit_strategy,
+            "threshold_strategy": spec.threshold_strategy,
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
         }
         for spec in model_specs
     ]
@@ -780,12 +990,16 @@ def write_summary(
         f"- Cold-start reveal counts: {', '.join(str(value) for value in q_values)}.",
         f"- Repeats per user and reveal count: {repeats}.",
         "- Difficulty: Excel `Words.accuracy` converted to Rasch difficulty with clipped `-logit(accuracy)`, then standardized.",
+<<<<<<< HEAD
         "- FastText: local skipgram model trained from the available vocabulary text, then clustered with KMeans.",
         f"- Fitting objective: asymmetric BCE with `known_loss_weight={KNOWN_LOSS_WEIGHT}` and "
         f"`unknown_loss_weight={UNKNOWN_LOSS_WEIGHT}` "
         "to penalize false known predictions more than false unknown predictions.",
         f"- Benchmark focus: unknown-priority balanced accuracy `{KNOWN_BALANCED_RECALL_WEIGHT} * known_recall + "
         f"{UNKNOWN_BALANCED_RECALL_WEIGHT} * unknown_recall`.",
+=======
+        "- Grouping in this run: residual-response clusters (simple k-means grouping over Rasch residual profiles).",
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
         "",
         "## Model family",
         "",
@@ -804,8 +1018,13 @@ def write_summary(
                 "tau_theta",
                 "tau_delta",
                 "gate_c",
+<<<<<<< HEAD
                 "known_loss_weight",
                 "unknown_loss_weight",
+=======
+                "fit_strategy",
+                "threshold_strategy",
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
             ],
         ),
         "",
@@ -816,14 +1035,21 @@ def write_summary(
                 [
                     "q",
                     "model",
+<<<<<<< HEAD
                     "unknown_priority_balanced_accuracy",
                     "balanced_accuracy",
                     "known_recall",
                     "unknown_recall",
+=======
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                     "log_loss",
                     "brier",
                     "auc",
                     "accuracy",
+<<<<<<< HEAD
+=======
+                    "balanced_accuracy",
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                     "calibration_error",
                     "vocabulary_mae",
                 ]
@@ -831,14 +1057,21 @@ def write_summary(
             [
                 "q",
                 "model",
+<<<<<<< HEAD
                 "unknown_priority_balanced_accuracy",
                 "balanced_accuracy",
                 "known_recall",
                 "unknown_recall",
+=======
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                 "log_loss",
                 "brier",
                 "auc",
                 "accuracy",
+<<<<<<< HEAD
+=======
+                "balanced_accuracy",
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                 "calibration_error",
                 "vocabulary_mae",
             ],
@@ -851,14 +1084,21 @@ def write_summary(
                 [
                     "q",
                     "model",
+<<<<<<< HEAD
                     "unknown_priority_balanced_accuracy",
                     "balanced_accuracy",
                     "known_recall",
                     "unknown_recall",
+=======
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                     "log_loss",
                     "brier",
                     "auc",
                     "accuracy",
+<<<<<<< HEAD
+=======
+                    "balanced_accuracy",
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                     "calibration_error",
                     "vocabulary_mae",
                 ]
@@ -866,14 +1106,21 @@ def write_summary(
             [
                 "q",
                 "model",
+<<<<<<< HEAD
                 "unknown_priority_balanced_accuracy",
                 "balanced_accuracy",
                 "known_recall",
                 "unknown_recall",
+=======
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                 "log_loss",
                 "brier",
                 "auc",
                 "accuracy",
+<<<<<<< HEAD
+=======
+                "balanced_accuracy",
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
                 "calibration_error",
                 "vocabulary_mae",
             ],
@@ -883,26 +1130,39 @@ def write_summary(
         "",
     ]
 
-    rasch = aggregate[aggregate["model"] == "rasch"]
+    rasch = aggregate[aggregate["model"] == "rasch_std_fixed"]
     best = best_by_q
     for _, best_row in best.iterrows():
         q = int(best_row["q"])
         rasch_row = rasch[rasch["q"] == q].iloc[0]
+<<<<<<< HEAD
         improvement = float(best_row["unknown_priority_balanced_accuracy"] - rasch_row["unknown_priority_balanced_accuracy"])
         lines.append(
             f"- At q={q}, `{best_row['model']}` has the highest unknown-priority balanced accuracy "
             f"({format_float(float(best_row['unknown_priority_balanced_accuracy']), 4)}), improving over Rasch by "
+=======
+        improvement = float(best_row["balanced_accuracy"] - rasch_row["balanced_accuracy"])
+        lines.append(
+            f"- At q={q}, `{best_row['model']}` has the highest balanced accuracy "
+            f"({format_float(float(best_row['balanced_accuracy']), 4)}), improving over Rasch by "
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
             f"{format_float(improvement, 4)}."
         )
 
     lines.extend(
         [
+            "- Ranking in this report is by balanced accuracy first (higher is better), then log loss.",
             "- Residual-response groups are expected to perform strongly here because they are derived from the same response matrix. "
             "Treat those results as an optimistic upper-bound for learned behavioral groupings unless groups are rebuilt on a separate calibration sample.",
+<<<<<<< HEAD
             "- FastText semantic clusters are locally trained from the provided vocabulary rather than a large pretrained corpus. "
             "They still satisfy the embedding-based grouping path, but production-quality semantic groups should use pretrained English fastText vectors.",
             "- Accuracy is less informative than unknown-priority balanced accuracy, log loss, Brier score, "
             "calibration error, and vocabulary-size error for this app because calibrated probabilities are the output.",
+=======
+            "- Balanced-accuracy-oriented threshold optimization can degrade calibration and probability quality. "
+            "Use log loss and Brier score as guardrails when choosing production settings.",
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
             "",
         ]
     )
@@ -911,17 +1171,13 @@ def write_summary(
 
 def build_model_specs(dataset: Dataset, seed: int) -> list[ModelSpec]:
     empty = np.zeros((len(dataset.words), 0), dtype=np.float64)
-    embeddings = train_fasttext_embeddings(dataset.words, dataset.difficulties, seed)
-    semantic_12 = soft_cluster_membership(embeddings, 12, seed + 12, 10.0)
-    semantic_24 = soft_cluster_membership(embeddings, 24, seed + 24, 10.0)
-    semantic_48 = soft_cluster_membership(embeddings, 48, seed + 48, 10.0)
+    residual_8 = build_residual_clusters(dataset.known, dataset.difficulties, 8, 2.0, seed + 108)
     residual_12 = build_residual_clusters(dataset.known, dataset.difficulties, 12, 2.0, seed + 112)
-    residual_24 = build_residual_clusters(dataset.known, dataset.difficulties, 24, 2.0, seed + 124)
-    residual_48 = build_residual_clusters(dataset.known, dataset.difficulties, 48, 2.0, seed + 148)
-    expert_tags = build_expert_tag_matrix(dataset.words, dataset.difficulties)
-    all_groups = combine_group_matrices([semantic_24, residual_24, expert_tags])
+    residual_12_seed1301 = build_residual_clusters(dataset.known, dataset.difficulties, 12, 2.0, 1301)
+    residual_12_seed701 = build_residual_clusters(dataset.known, dataset.difficulties, 12, 2.0, 701)
 
     return [
+<<<<<<< HEAD
         ModelSpec("rasch", empty, 2.0, 0.5, 50.0, KNOWN_LOSS_WEIGHT, UNKNOWN_LOSS_WEIGHT),
         ModelSpec("semantic_fasttext_k12", semantic_12, 2.0, 0.55, 50.0, KNOWN_LOSS_WEIGHT, UNKNOWN_LOSS_WEIGHT),
         ModelSpec("semantic_fasttext_k24", semantic_24, 2.0, 0.55, 50.0, KNOWN_LOSS_WEIGHT, UNKNOWN_LOSS_WEIGHT),
@@ -933,13 +1189,28 @@ def build_model_specs(dataset: Dataset, seed: int) -> list[ModelSpec]:
         ModelSpec("all_groups_balanced", all_groups, 2.0, 0.45, 50.0, KNOWN_LOSS_WEIGHT, UNKNOWN_LOSS_WEIGHT),
         ModelSpec("all_groups_fast_gate", all_groups, 2.0, 0.70, 20.0, KNOWN_LOSS_WEIGHT, UNKNOWN_LOSS_WEIGHT),
         ModelSpec("all_groups_strong_shrinkage", all_groups, 2.0, 0.35, 100.0, KNOWN_LOSS_WEIGHT, UNKNOWN_LOSS_WEIGHT),
+=======
+        ModelSpec("rasch_std_fixed", empty, 2.0, 0.5, 50.0, "standard", "fixed_0.50"),
+        ModelSpec("rasch_balanced_fit", empty, 2.0, 0.5, 50.0, "class_weighted", "fixed_0.50"),
+        ModelSpec("rasch_balanced_fit_ba_threshold", empty, 2.0, 0.5, 50.0, "class_weighted", "observed_ba_opt"),
+        ModelSpec("residual_k8_bal_tau1p0_g20_shrunk", residual_8, 2.0, 1.00, 20.0, "class_weighted", "observed_ba_opt_shrunk"),
+        ModelSpec("residual_k8_std_tau1p0_g20_ba", residual_8, 2.0, 1.00, 20.0, "standard", "observed_ba_opt"),
+        ModelSpec("residual_k12_bal_tau1p0_g20_ba", residual_12, 2.0, 1.00, 20.0, "class_weighted", "observed_ba_opt"),
+        ModelSpec("residual_k12_seed1301_tau1p4_g12_shrunk", residual_12_seed1301, 2.0, 1.40, 12.0, "class_weighted", "observed_ba_opt_shrunk"),
+        ModelSpec("residual_k12_seed701_tau1p4_g8_shrunk", residual_12_seed701, 2.0, 1.40, 8.0, "class_weighted", "observed_ba_opt_shrunk"),
+        ModelSpec("residual_k12_seed701_tau1p6_g12_shrunk", residual_12_seed701, 2.0, 1.60, 12.0, "class_weighted", "observed_ba_opt_shrunk"),
+        ModelSpec("residual_k12_seed1301_tau1p6_g8_shrunk", residual_12_seed1301, 2.0, 1.60, 8.0, "class_weighted", "observed_ba_opt_shrunk"),
+>>>>>>> 2fb8341 (Improve residual IRT balanced accuracy for q50/q100 and add q1000 eval)
     ]
 
 
 def main() -> None:
     args = parse_args()
     dataset = load_dataset(Path(args.responses), Path(args.word_difficulty))
-    baseline_specs = [DifficultyOnlySpec("excel_difficulty_only")]
+    baseline_specs = [
+        DifficultyOnlySpec("excel_difficulty_only_fixed", "fixed_0.50"),
+        DifficultyOnlySpec("excel_difficulty_only_observed_ba_threshold", "observed_ba_opt"),
+    ]
     model_specs = build_model_specs(dataset, int(args.seed))
     all_metrics: list[Metrics] = []
     for spec in baseline_specs:
