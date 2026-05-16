@@ -1,24 +1,47 @@
-# Duolingo HTL benchmark (q=50)
+# Duolingo HLR grouped IRT results (balanced-accuracy optimization)
 
 ## Setup
 
-- Source: `data/raw/duolingo_hlr/learning_traces.csv.gz`.
-- Language pair: `en->es`.
-- Subset selection: top `500` users by row count and top `1000` lexemes by row count.
-- Label construction: `known = (mean p_recall per user-lexeme >= 0.5)`.
-- Missing user-lexeme cells were imputed with lexeme-majority known/unknown to form a dense matrix required by grouped IRT.
-- Lexeme difficulty was estimated from Duolingo subset accuracy and transformed as standardized `-logit(accuracy)`.
-- Evaluation protocol: per-user random reveal of `q=50` lexemes, hidden-set scoring, `3` repeats.
+- Dataset: `data/raw/duolingo_hlr/learning_traces.csv.gz`
+- Language pair: `en->es`
+- Dense evaluation matrix: `120 users x 1200 lexemes`
+- Known/unknown label: `known = mean(p_recall per user-lexeme) >= 0.8`
+- Missing user-lexeme cells: imputed via lexeme-majority known label
+- Lexeme difficulty: mean `p_recall` per lexeme -> clipped `-logit` -> standardized
+- Evaluation: per-user random reveal, then predict hidden words
+- Repeats: `3` for final metrics
 
-## Results
+## Optimization scope
 
-| rank | model | pr_auc | balanced_accuracy |
+- Coarse stage: 20 models, `q = 50, 100`, 1 repeat
+- Fine stage: top 6 models, `q = 50, 100, 1000`, 3 repeats
+- Grouping families tested:
+  - residual-response clusters
+  - response-only clusters
+  - residual-sign clusters
+  - fastText clusters
+  - residual x difficulty-bin interaction groups
+
+## Best model by q
+
+| q | best model | balanced_accuracy | pr_auc | auc |
+| --- | --- | --- | --- | --- |
+| 50 | `response12_g12_tau1p6_c12p0_observed_ba_opt_shrunk` | 0.8370 | 0.9499 | 0.8972 |
+| 100 | `residual16_s701_g16_tau1p6_c12p0_observed_ba_opt_shrunk` | 0.8461 | 0.9533 | 0.9051 |
+| 1000 | `residual16_s701_g16_tau1p0_c20p0_observed_ba_opt` | 0.8619 | 0.9610 | 0.9196 |
+
+## Comparison to matched Rasch baseline
+
+Baseline used: `rasch_bal_ba` on the exact same data slice and protocol.
+
+| q | Rasch BA | best grouped BA | BA gain |
 | --- | --- | --- | --- |
-| 1 | residual_k12_seed701_tau1p4_g8_shrunk | 0.9918 | 0.5213 |
-| 2 | residual_k12_seed1301_tau1p4_g12_shrunk | 0.9916 | 0.5213 |
-| 3 | residual_k12_seed701_tau1p6_g12_shrunk | 0.9918 | 0.5210 |
+| 50 | 0.7818 | 0.8370 | +0.0552 |
+| 100 | 0.7887 | 0.8461 | +0.0575 |
+| 1000 | 0.7969 | 0.8619 | +0.0650 |
 
 ## Notes
 
-- Rankings are sorted by balanced accuracy first, then PR-AUC.
-- Dense matrix size used for this run: `500 x 1000`.
+- On this Duolingo setup, grouped models consistently outperform Rasch in balanced accuracy.
+- Best-performing grouped families are `response12` and `residual16` with shrunk BA-optimized thresholds.
+- Full fine-stage ranking is stored in `duolingo_irt_optimization_summary.md`.

@@ -90,3 +90,52 @@ The optimizer first fits Rasch-only `theta`, then jointly fits `theta` and group
 - Ranking in this report is by balanced accuracy first (higher is better), then log loss.
 - Residual-response groups are expected to perform strongly here because they are derived from the same response matrix. Treat those results as an optimistic upper-bound for learned behavioral groupings unless groups are rebuilt on a separate calibration sample.
 - Balanced-accuracy-oriented threshold optimization can degrade calibration and probability quality. Use log loss and Brier score as guardrails when choosing production settings.
+
+## Cross-dataset update (latest)
+
+The results above are the original Ehara-centered benchmark. Additional optimization was run on Duolingo HLR and then transferred back to Ehara.
+
+### Duolingo-optimized setup
+
+- Dataset slice: `en->es`, dense `120 x 1200` matrix.
+- Labeling: known if `mean(p_recall) >= 0.8`.
+- Missing user-lexeme cells: lexeme-majority imputation.
+- Difficulty: lexeme mean `p_recall`, transformed as standardized clipped `-logit`.
+
+### Best grouped models on Duolingo by reveal count
+
+| q | model | balanced_accuracy | pr_auc |
+| --- | --- | --- | --- |
+| 50 | response12_g12_tau1p6_c12p0_observed_ba_opt_shrunk | 0.8370 | 0.9499 |
+| 100 | residual16_s701_g16_tau1p6_c12p0_observed_ba_opt_shrunk | 0.8461 | 0.9533 |
+| 1000 | residual16_s701_g16_tau1p0_c20p0_observed_ba_opt | 0.8619 | 0.9610 |
+
+Matched Rasch baseline on the same Duolingo setup:
+
+| q | rasch_bal_ba | best_grouped | BA gain |
+| --- | --- | --- | --- |
+| 50 | 0.7818 | 0.8370 | +0.0552 |
+| 100 | 0.7887 | 0.8461 | +0.0575 |
+| 1000 | 0.7969 | 0.8619 | +0.0650 |
+
+### Transfer of the best shared model back to Ehara
+
+The most robust shared model across both datasets is:
+
+- `response12_g12_tau1p6_c12p0_observed_ba_opt_shrunk`
+
+Ehara performance (same `q` protocol) for that model:
+
+| q | balanced_accuracy | pr_auc |
+| --- | --- | --- |
+| 50 | 0.8337 | 0.9628 |
+| 100 | 0.8549 | 0.9703 |
+| 1000 | 0.8862 | 0.9773 |
+
+Ehara matched Rasch baseline (`rasch_bal_ba`) and gain:
+
+| q | rasch_bal_ba | response12... | BA gain |
+| --- | --- | --- | --- |
+| 50 | 0.7407 | 0.8337 | +0.0931 |
+| 100 | 0.7625 | 0.8549 | +0.0924 |
+| 1000 | 0.7699 | 0.8862 | +0.1163 |
